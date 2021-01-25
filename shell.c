@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -8,7 +9,7 @@
 
 #define SIZE 1024
 
-char *readline() {
+char* readline() {
 	char c;
 	int n, pos = 0;
 	char *buffer = (char *) malloc(SIZE);
@@ -20,21 +21,40 @@ char *readline() {
 		}
 		buffer[pos++] = c;
 	}
+	if (n == 0)
+		write(1, "\n", 1);
 
 	return buffer;
 }
 
+char** parse(char *line) {
+	char *delim = " \t", *token;
+	char **args = (char **) malloc( sizeof(char* ) * 100 );
+	int i = 0;
+	token = strtok(line, delim);
+	if (!token) {
+		args[i++] = line;
+	}
+	while (token) {
+		args[i++] = token;
+		token = strtok(NULL, delim);
+	}
+	args[i] = NULL;
+	return args;
+
+}
+
 int main () {
-	char *buf;;
-	char *const arg[10];
+	char *buf, **args;
 		
 	while (1) {
 		int len;
 		write(1, "> ", 2);
 		buf = readline();
+		args = parse(buf);
 		int pid = fork();
 		if (pid == 0) {  	//child process
-			execl(buf, buf, "-l", NULL);
+			execve(buf, args, NULL);
 		}
 		else if (pid > 0) { 	//parent process
 			wait(NULL);
@@ -43,6 +63,7 @@ int main () {
 			printf ("Error in fork!\n");
 		}
 		free(buf);
+		free(args);
 	}	
 
 	return 0;
