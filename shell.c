@@ -12,11 +12,12 @@
 
 //global variables
 int cmd_flag = 0;
+int inredirect_flag = 0, outredirect_flag = 0;
 
-typedef struct redirect {
-	int fd;
-	char *filename;
-}redirect;
+//typedef struct redirect {
+//	int fd;
+//	char filename[50];
+//}redirect;
 
 char* readline() {
 	char c;
@@ -72,26 +73,112 @@ char** parse_args(char *line) {
 
 }
 
-int create_process (char *command) {
-	char **args = parse_args(command);
+int parse_redirect(char *line, char ch, char **ptr) {
+	char* token, filename[50];
+	int i;
+	inredirect_flag = 0;
+	outredirect_flag = 0;
+	while ((token = strchr(line, ch))) {
+		i = 0;
+		*token = ' ';
+		token++;
+		if (i == 0) {
+			while(*token == ' ')
+				token++;
+		}
+		while (*token != '\0' &&  *token != ' ' &&  *token != '\t') {
+			filename[i++] = *token;
+			*token = ' ';
+			token++;
+		}
+		if (i == 0) {
+			return 1;
+		}
+		filename[i] = '\0';
+		if (ch == '>'){
+			ptr[outredirect_flag] = (char *) malloc (strlen(filename) + 1);
+			strcpy(ptr[outredirect_flag++], filename);
+		}
+		else {
+			ptr[inredirect_flag] = (char *) malloc (strlen(filename) + 1);
+			strcpy(ptr[inredirect_flag++], filename);
+		}
+		printf ("file = %s\n", ptr[inredirect_flag - 1]);
+			
+	}
+	return 0;
+}
+
+void redirect(char **infile, char **outfile) {
+	int i, j, n, oldfd, newfd;
+	char **files;
+	for (j = 0; j < 2; j++) {
+		if (j == 0) {
+			files = infile;
+			n = inredirect_flag;
+			newfd = 0;
+		}
+		else {
+			files = outfile;
+			n = outredirect_flag;
+			newfd = 1;
+		}
+
+		for (i = 0; i < n; i++) {
+			if (j == 0)
+				oldfd = open(files[i], O_WRONLY | O_CREAT, 0644);
+			else {
+				if((oldfd = open(files[i], O_RDONLY) == -1))
+						perror ("Invalid file");
+			}
+			if(dup2(oldfd, newfd) < 0) {
+				perror("dup failed");
+			}
+			close(oldfd);
+			free(files[i]);
+		}
+	}
+}
+
+void create_process (char *command) {
+	char **infile, **outfile, **args;
 	int pid = fork();
 	if (pid == 0) { 	//child process
+		infile = (char **) malloc (sizeof(char *) * 10);
+		outfile = (char **) malloc (sizeof(char *) * 10);
+
+		if (parse_redirect(command, '<', infile) == 1) {
+			printf ("Syntax error near '<' ");
+			return;
+		}
+		if (parse_redirect(command, '>', outfile) == 1) {
+			printf ("Syntax error near '>' ");
+			return;
+		}
+
+		//
+		args = parse_args(command);
+
+		redirect(infile, outfile);
 		if ( execvp(args[0], args) == -1 ) {
 			perror("exec failed"); 		//if the command not found
 		}
 
+
 	}
+
 	else if (pid > 0) { 	//parent process
 		wait(NULL);
 	}
+
 	else{
 		perror("fork failed");
 	}
-	free(args);
-	return 0;	
+
+	return;	
 }
 
-int create_pipe(char **commands) {
+void create_pipe(char **commands) {
 	int i, pid, nopipes;
 	int pipefd[100];
 	char **args;
@@ -115,7 +202,7 @@ int create_pipe(char **commands) {
 
 			//if not the last command, open pipe for writing
 			if (i != cmd_flag - 1) {
-				if (dup2(pipefd[(2 * i )+ 1], 1) < 0) {
+				if (dup2(pipefd[(2 * i)+ 1], 1) < 0) {
 					perror ("dup2 failed");
 					break;
 				}
@@ -158,26 +245,23 @@ int create_pipe(char **commands) {
 
 	for (nopipes = 0; nopipes <= ((2 * i) - 3); nopipes++)
 		close(pipefd[nopipes]);
-	return 0;
+	return ;
 
 }
 
 
 int main () {
 	char *buf, **commands;
-	int i;
-		
 	while (1) {
-		printf("\n");
-		write(1, "prompt> ", strlen("prompt> "));
+		write(2, "prompt> ", strlen("prompt> "));
 		buf = readline();
 		cmd_flag = 0;
 		commands = parse_pipe(buf);
 		if (cmd_flag == 1) {
-			i = create_process(commands[0]);
+			 create_process(commands[0]);
 		}
 		else {
-			i = create_pipe(commands);
+			 create_pipe(commands);
 			//free(commands);
 			//free(buf);
 			//break;
@@ -194,6 +278,7 @@ int main () {
 		//}
 		free(commands);
 		free(buf);
+		fflush(stdout);
 		//args = parse_args();
 		//int pid = fork();
 		//if (pid == 0) { 	//child process
