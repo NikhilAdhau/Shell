@@ -76,8 +76,6 @@ char** parse_args(char *line) {
 int parse_redirect(char *line, char ch, char **ptr) {
 	char* token, filename[50];
 	int i;
-	inredirect_flag = 0;
-	outredirect_flag = 0;
 	while ((token = strchr(line, ch))) {
 		i = 0;
 		*token = ' ';
@@ -103,7 +101,7 @@ int parse_redirect(char *line, char ch, char **ptr) {
 			ptr[inredirect_flag] = (char *) malloc (strlen(filename) + 1);
 			strcpy(ptr[inredirect_flag++], filename);
 		}
-		printf ("file = %s\n", ptr[inredirect_flag - 1]);
+		//printf ("file = %s\n", ptr[inredirect_flag - 1]);
 			
 	}
 	return 0;
@@ -123,18 +121,21 @@ void redirect(char **infile, char **outfile) {
 			n = outredirect_flag;
 			newfd = 1;
 		}
-
 		for (i = 0; i < n; i++) {
-			if (j == 0)
+			if (j == 1) {
+				close(1);
 				oldfd = open(files[i], O_WRONLY | O_CREAT, 0644);
+			}
 			else {
+				//printf ("infile %s\n", files[i]);
+				close(0);
 				if((oldfd = open(files[i], O_RDONLY) == -1))
 						perror ("Invalid file");
 			}
-			if(dup2(oldfd, newfd) < 0) {
-				perror("dup failed");
-			}
-			close(oldfd);
+			//if(dup2(oldfd, newfd) < 0) {
+		//		perror("dup failed");
+		//	}
+			//close(oldfd);
 			free(files[i]);
 		}
 	}
@@ -147,10 +148,13 @@ void create_process (char *command) {
 		infile = (char **) malloc (sizeof(char *) * 10);
 		outfile = (char **) malloc (sizeof(char *) * 10);
 
+		inredirect_flag = 0;
+		outredirect_flag = 0;
 		if (parse_redirect(command, '<', infile) == 1) {
 			printf ("Syntax error near '<' ");
 			return;
 		}
+
 		if (parse_redirect(command, '>', outfile) == 1) {
 			printf ("Syntax error near '>' ");
 			return;
@@ -181,20 +185,35 @@ void create_process (char *command) {
 void create_pipe(char **commands) {
 	int i, pid, nopipes;
 	int pipefd[100];
-	char **args;
+	char **args, **infile, **outfile;
 	for (i = 0; i < cmd_flag; i++) {
-		args = parse_args(commands[i]);
 		if (i != cmd_flag -1) { 
 			pipe(&pipefd[2 * i]);
 			printf ("pipefd %d %d\n", pipefd[2*i], pipefd[2*i+1]);
 		}
 		pid = fork();
 		if (pid == 0) {
+			infile = (char **) malloc (sizeof(char *) * 10);
+			outfile = (char **) malloc (sizeof(char *) * 10);
+
+			inredirect_flag = 0;
+			outredirect_flag = 0;
+			if (parse_redirect(commands[i], '<', infile) == 1) {
+				printf ("Syntax error near '<' ");
+				return;
+			}
+
+			if (parse_redirect(commands[i], '>', outfile) == 1) {
+				printf ("Syntax error near '>' ");
+				return;
+			}
+			args = parse_args(commands[i]);
 
 			//if not the first command, open pipe for reading
 			if (i != 0) {
 				//old read fd to 0
-				if (dup2(pipefd[(2 * i) - 2], 0) < 0) {
+				close(0);
+				if (dup(pipefd[(2 * i) - 2]) < 0) {
 					perror ("dup2 failed");
 					break;
 				}
@@ -202,7 +221,8 @@ void create_pipe(char **commands) {
 
 			//if not the last command, open pipe for writing
 			if (i != cmd_flag - 1) {
-				if (dup2(pipefd[(2 * i)+ 1], 1) < 0) {
+				close(1);
+				if (dup(pipefd[(2 * i)+ 1]) < 0) {
 					perror ("dup2 failed");
 					break;
 				}
@@ -215,7 +235,8 @@ void create_pipe(char **commands) {
 					break;	
 				close(pipefd[nopipes]);
 			}
-
+			
+			redirect(infile, outfile);
 			//exec the new command
 			if (execvp(args[0], args) == -1 ) {
 				perror ("exec failed");
