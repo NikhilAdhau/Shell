@@ -5,19 +5,20 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <wait.h>
+#include <sys/wait.h>
 #include <errno.h>
+#include <signal.h>
 
 #define SIZE 1024
+#define MAX_FILES 50
+#define MAX_PIPES 50
+#define MAX_ARGS 50
+
 
 //global variables
 int cmd_flag = 0;
 int inredirect_flag = 0, outredirect_flag = 0;
 
-//typedef struct redirect {
-//	int fd;
-//	char filename[50];
-//}redirect;
 
 char* readline() {
 	char c;
@@ -31,14 +32,12 @@ char* readline() {
 		}
 		buffer[pos++] = c;
 	}
-	//if (n == 0)
-	//	write(1, "\n", 1);
 
 	return buffer;
 }
 
 char** parse_pipe(char *line) {
-	char **commands = (char **) malloc(sizeof(char *) * 10);	
+	char **commands = (char **) malloc(sizeof(char *) * MAX_PIPES);	
 	char *delim = "|", *token;
 	int i = 0;
 	
@@ -58,7 +57,7 @@ char** parse_pipe(char *line) {
 
 char** parse_args(char *line) {
 	char *delim = " \t", *token;
-	char **args = (char **) malloc( sizeof(char* ) * 100 );
+	char **args = (char **) malloc( sizeof(char* ) * MAX_ARGS );
 	int i = 0;
 	token = strtok(line, delim);
 	if (!token) {
@@ -74,7 +73,7 @@ char** parse_args(char *line) {
 }
 
 int parse_redirect(char *line, char ch, char **ptr) {
-	char* token, filename[50];
+	char* token, filename[100];
 	int i;
 	while ((token = strchr(line, ch))) {
 		i = 0;
@@ -101,7 +100,6 @@ int parse_redirect(char *line, char ch, char **ptr) {
 			ptr[inredirect_flag] = (char *) malloc (strlen(filename) + 1);
 			strcpy(ptr[inredirect_flag++], filename);
 		}
-		//printf ("file = %s\n", ptr[inredirect_flag - 1]);
 			
 	}
 	return 0;
@@ -123,19 +121,21 @@ void redirect(char **infile, char **outfile) {
 		}
 		for (i = 0; i < n; i++) {
 			if (j == 1) {
-				close(1);
-				oldfd = open(files[i], O_WRONLY | O_CREAT, 0644);
+				//close(1);
+				if((oldfd = open(files[i], O_WRONLY | O_CREAT, 0644)) == -1 )
+					printf ("Invalid file");
+				
 			}
 			else {
-				//printf ("infile %s\n", files[i]);
-				close(0);
-				if((oldfd = open(files[i], O_RDONLY) == -1))
-						perror ("Invalid file");
+				//close(0);
+				if((oldfd = open(files[i], O_RDONLY)) == -1)
+						printf ("Invalid file");
 			}
-			//if(dup2(oldfd, newfd) < 0) {
-		//		perror("dup failed");
-		//	}
-			//close(oldfd);
+			//printf ("%d\n", oldfd);
+			if(dup2(oldfd, newfd) == -1) {
+				perror("dup failed");
+			}
+			close(oldfd);
 			free(files[i]);
 		}
 	}
@@ -143,10 +143,15 @@ void redirect(char **infile, char **outfile) {
 
 void create_process (char *command) {
 	char **infile, **outfile, **args;
+	int wstatus;
 	int pid = fork();
 	if (pid == 0) { 	//child process
-		infile = (char **) malloc (sizeof(char *) * 10);
-		outfile = (char **) malloc (sizeof(char *) * 10);
+		//set signal handlers to default
+		signal(SIGINT, SIG_DFL);
+		signal(SIGTSTP, SIG_DFL);
+
+		infile = (char **) malloc (sizeof(char *) * MAX_FILES);
+		outfile = (char **) malloc (sizeof(char *) * MAX_FILES);
 
 		inredirect_flag = 0;
 		outredirect_flag = 0;
@@ -164,7 +169,11 @@ void create_process (char *command) {
 		args = parse_args(command);
 
 		redirect(infile, outfile);
-		if ( execvp(args[0], args) == -1 ) {
+		//for cd command
+		if (!strcmp(args[0],"cd")) {
+			chdir(args[1]);
+		}
+		else if ( execvp(args[0], args) == -1 ) {
 			perror("exec failed"); 		//if the command not found
 		}
 
@@ -172,28 +181,50 @@ void create_process (char *command) {
 	}
 
 	else if (pid > 0) { 	//parent process
-		wait(NULL);
+
+		//wait for the child process to change state (term/stop)
+		waitpid(-1, &wstatus, WUNTRACED);
+		//if (WIFEXITED(wstatus)) {
+                //       printf("exited, status=%d\n", WEXITSTATUS(wstatus));
+		//} 
+		if (WIFSIGNALED(wstatus)) {
+                       printf("\n");
+		} 
+		else if (WIFSTOPPED(wstatus)) {
+                       printf("Stopped\n");
+		} 
+		else if (WIFCONTINUED(wstatus)) {
+                       printf("continued\n");
+		}
 	}
 
 	else{
 		perror("fork failed");
+		return;
 	}
 
 	return;	
 }
 
 void create_pipe(char **commands) {
-	int i, pid, nopipes;
-	int pipefd[100];
+	int i, pid, nopipes, wstatus;
+	int pipefd[MAX_PIPES];
 	char **args, **infile, **outfile;
+
 	for (i = 0; i < cmd_flag; i++) {
+		//create pipe except the last process
 		if (i != cmd_flag -1) { 
 			pipe(&pipefd[2 * i]);
-			printf ("pipefd %d %d\n", pipefd[2*i], pipefd[2*i+1]);
 		}
+
 		pid = fork();
+
 		if (pid == 0) {
-			infile = (char **) malloc (sizeof(char *) * 10);
+			//set signal handlers to default
+			signal(SIGINT, SIG_DFL);
+			signal(SIGTSTP, SIG_DFL);
+
+			infile = (char **) malloc (sizeof(char *) * MAX_FILES);
 			outfile = (char **) malloc (sizeof(char *) * 10);
 
 			inredirect_flag = 0;
@@ -212,8 +243,7 @@ void create_pipe(char **commands) {
 			//if not the first command, open pipe for reading
 			if (i != 0) {
 				//old read fd to 0
-				close(0);
-				if (dup(pipefd[(2 * i) - 2]) < 0) {
+				if (dup2(pipefd[(2 * i) - 2], 0) < 0) {
 					perror ("dup2 failed");
 					break;
 				}
@@ -221,8 +251,7 @@ void create_pipe(char **commands) {
 
 			//if not the last command, open pipe for writing
 			if (i != cmd_flag - 1) {
-				close(1);
-				if (dup(pipefd[(2 * i)+ 1]) < 0) {
+				if (dup2(pipefd[(2 * i)+ 1], 1) < 0) {
 					perror ("dup2 failed");
 					break;
 				}
@@ -237,6 +266,9 @@ void create_pipe(char **commands) {
 			}
 			
 			redirect(infile, outfile);
+			free (infile);
+			free (outfile);
+
 			//exec the new command
 			if (execvp(args[0], args) == -1 ) {
 				perror ("exec failed");
@@ -247,76 +279,78 @@ void create_pipe(char **commands) {
 		}
 
 		else if (pid > 0){
-			//if (i == cmd_flag - 1) {
-			//	for (nopipes = 0; nopipes < cmd_flag; nopipes++) {
-			//		wait(NULL);
-			//		printf ("%d child\n", nopipes);
-			//	}
-			//	//wait(NULL);
-			//}
-			//
 			continue;
 		}
+
 		else {
 			perror ("fork failed");
+			return;
 		}
 	}
-
-	//while (wait(NULL) > 0);
-
+	
+	//close all the pipes in the parent process
 	for (nopipes = 0; nopipes <= ((2 * i) - 3); nopipes++)
 		close(pipefd[nopipes]);
+
+	// wait till all the child processes terminate/change state
+	for (i = 0; i < cmd_flag; i++) {
+
+		//wait for the child process to change state (term/stop)
+		waitpid(-1, &wstatus, WUNTRACED);
+
+		//if (WIFEXITED(wstatus)) {
+                //       printf("exited, status=%d\n", WEXITSTATUS(wstatus));
+		//} 
+		if (WIFSIGNALED(wstatus)) {
+                       printf("\n");
+		} 
+		else if (WIFSTOPPED(wstatus)) {
+                       printf("Stopped\n");
+		} 
+		else if (WIFCONTINUED(wstatus)) {
+                       printf("continued\n");
+		}
+
+	}
+
 	return ;
 
 }
 
+void handle(int signum){
+	char *prompt = "\r\n\033[0;33mprompt> \033[0m";
+	write(1, prompt, strlen(prompt));
+	//printf ("\n\033[0;33mprompt> \033[0m");
+}
 
 int main () {
 	char *buf, **commands;
+	char *prompt = "\033[0;33mprompt> \033[0m";
+	
+	//handle signals
+	signal(SIGINT, SIG_IGN);
+	signal(SIGTSTP, SIG_IGN);
+
 	while (1) {
-		write(2, "prompt> ", strlen("prompt> "));
+		write(1, prompt, strlen(prompt));
 		buf = readline();
+		
+		//when exit is entered --> terminate
+		if (!(strcasecmp(buf, "exit")))
+			break;
+
 		cmd_flag = 0;
 		commands = parse_pipe(buf);
+
 		if (cmd_flag == 1) {
 			 create_process(commands[0]);
 		}
 		else {
 			 create_pipe(commands);
-			//free(commands);
-			//free(buf);
-			//break;
 		}
-		//for (i = 0; i < nocmd; i++) {
-		//	if (cmd_flag - 1) {
-		//		printf ("%d\n", nocmd);
-		//		//pipe(&pipefd[2 * nocmd]);
-		//	}
-		//	else {
-		//		cmd_flag--;
-		//		create_process(commands[i]);	
-		//	}
-		//}
+
 		free(commands);
 		free(buf);
-		fflush(stdout);
-		//args = parse_args();
-		//int pid = fork();
-		//if (pid == 0) { 	//child process
-		//	if ( execvp(args[0], args) == -1 ) {
-		//		perror("exec failed"); 		//if the command not found
-		//	}
-
-		//}
-		//else if (pid > 0) { 	//parent process
-		//	wait(NULL);
-		//}
-		//else{
-		//	perror("fork failed");
-		//}
-		//free(buf);
-		//free(args);
-		//free(commands);
 	}	
 	return 0;
 }
